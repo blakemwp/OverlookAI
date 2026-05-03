@@ -50,25 +50,38 @@ def _setup_rail(ax):
     ax.set_xlim(-0.5, NUM_SLOTS - 0.5)
     ax.set_ylim(-0.5, 0.5)
     ax.set_yticks([])
-    ax.set_xticks(range(NUM_SLOTS))
-    ax.set_xticklabels([str(i) for i in range(NUM_SLOTS)], fontsize=8, color=_TEXT)
+
+    # adapt tick density and per-slot decorations to the slot count
+    show_per_slot_labels = NUM_SLOTS <= 30
+    tick_step = max(1, NUM_SLOTS // 20)
+    ticks = list(range(0, NUM_SLOTS, tick_step))
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([str(i) for i in ticks], fontsize=8, color=_TEXT)
     ax.set_title("Railing State", fontsize=10, color=_TEXT, pad=6)
+
+    rect_w = 0.9 if NUM_SLOTS <= 30 else 1.0
+    edge_lw = 1.2 if NUM_SLOTS <= 30 else 0.0
+    dz_w = 0.96 if NUM_SLOTS <= 30 else 1.02
 
     rects, labels, dz_markers = [], [], []
     for i in range(NUM_SLOTS):
-        r = plt.Rectangle((i - 0.45, -0.4), 0.9, 0.8,
+        r = plt.Rectangle((i - rect_w / 2, -0.4), rect_w, 0.8,
                            facecolor=EMPTY_COLOR, edgecolor="#475569",
-                           linewidth=1.2, zorder=2)
+                           linewidth=edge_lw, zorder=2)
         ax.add_patch(r)
         rects.append(r)
 
-        t = ax.text(i, 0, "", ha="center", va="center",
-                    fontsize=7, color="white", fontweight="bold", zorder=3)
+        if show_per_slot_labels:
+            t = ax.text(i, 0, "", ha="center", va="center",
+                        fontsize=7, color="white", fontweight="bold", zorder=3)
+        else:
+            t = None
         labels.append(t)
 
-        dz = plt.Rectangle((i - 0.48, -0.48), 0.96, 0.96,
+        dz = plt.Rectangle((i - dz_w / 2, -0.48), dz_w, 0.96,
                             facecolor="none", edgecolor="#EF4444",
-                            linewidth=2, linestyle="--", zorder=4, visible=False)
+                            linewidth=2 if NUM_SLOTS <= 30 else 1, linestyle="--",
+                            zorder=4, visible=False)
         ax.add_patch(dz)
         dz_markers.append(dz)
 
@@ -150,10 +163,12 @@ def run(seed=None):
             agent = sim.env.slots[i]
             if agent is None:
                 rects[i].set_facecolor(EMPTY_COLOR)
-                labels[i].set_text("")
+                if labels[i] is not None:
+                    labels[i].set_text("")
             else:
                 rects[i].set_facecolor(AGENT_COLORS[agent.agent_type])
-                labels[i].set_text(repr(agent))
+                if labels[i] is not None:
+                    labels[i].set_text(repr(agent))
             dz_markers[i].set_visible(i in sim.env.dead_zones)
 
         # live stats

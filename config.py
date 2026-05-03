@@ -1,7 +1,7 @@
 # tunables live here. touch at your own risk.
 
 SEED = 42
-NUM_SLOTS = 10
+NUM_SLOTS = 30
 SIM_DURATION = 120          # ticks (shows as "minutes", runs as seconds)
 TICK_INTERVAL_MS = 100
 
@@ -15,7 +15,6 @@ SOCIALIZER_DURATION_STD = 2.0
 VIEWER_PATIENCE_THRESHOLD = 0.5  # chance of bailing each tick when crowded
 
 # phantom queue thresholds
-PATH_CONGESTION_THRESHOLD = 7
 QUEUE_ABANDON_BASE = 0.05
 QUEUE_ABANDON_GROWTH = 0.02      # stacks per tick spent waiting
 

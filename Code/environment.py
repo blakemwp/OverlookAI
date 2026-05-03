@@ -1,12 +1,15 @@
 from collections import deque
+import numpy as np
+
 from Code.agents import Agent
-from config import NUM_SLOTS, PATH_CONGESTION_THRESHOLD, DEAD_ZONE_NEIGHBOR_MIN, DEAD_ZONE_DENSITY_TICKS
+from config import NUM_SLOTS, DEAD_ZONE_NEIGHBOR_MIN, DEAD_ZONE_DENSITY_TICKS
 
 
 class Overlook:
     """1D railing of NUM_SLOTS + an overflow waiting area."""
 
-    def __init__(self):
+    def __init__(self, rng: np.random.Generator):
+        self.rng = rng
         self.slots: list[Agent | None] = [None] * NUM_SLOTS
         self.waiting_area: deque[Agent] = deque()
         self.dead_zones: set[int] = set()
@@ -29,27 +32,31 @@ class Overlook:
             count += 1
         return count
 
-    def is_path_congested(self) -> bool:
-        return self.occupied_count() >= PATH_CONGESTION_THRESHOLD
+    def _pick(self, candidates: list[int]) -> int | None:
+        """Random tie-breaker over a candidate slot list (or None if empty)."""
+        if not candidates:
+            return None
+        return int(self.rng.choice(candidates))
 
     def best_slot_for_viewer(self) -> int | None:
-        """Empty slot with <=1 neighbour, ignoring dead zones."""
+        """Random empty slot with <=1 neighbour, ignoring dead zones."""
         candidates = [
             i for i in self.empty_indices()
             if i not in self.dead_zones and self.neighbor_count(i) <= 1
         ]
-        return candidates[0] if candidates else None
+        return self._pick(candidates)
 
     def best_slot_for_socializer(self) -> int | None:
-        """Empty slot with the most neighbours."""
+        """Random empty slot among those tied for the most neighbours."""
         empties = self.empty_indices()
         if not empties:
             return None
-        return max(empties, key=lambda i: self.neighbor_count(i))
+        max_n = max(self.neighbor_count(i) for i in empties)
+        candidates = [i for i in empties if self.neighbor_count(i) == max_n]
+        return self._pick(candidates)
 
     def any_empty_slot(self) -> int | None:
-        empties = self.empty_indices()
-        return empties[0] if empties else None
+        return self._pick(self.empty_indices())
 
     # -- mutations --
 

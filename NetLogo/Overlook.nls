@@ -1,0 +1,365 @@
+; =============================================================================
+;  OVERLOOK AGENT-BASED MODEL
+;  Blake Peterman -- DIGIT 430
+; =============================================================================
+;
+;  WHAT IT MODELS
+;    A scenic overlook with a 30-slot railing. Three agent types compete for
+;    those slots, each with distinct preferences. Personal-space norms and
+;    phantom queues create an "Artificial Capacity Ceiling" -- the railing
+;    rarely fills to its physical maximum because politeness pushes people away
+;    before all 30 slots are taken.
+;
+;  AGENT TYPES (color-coded on the railing)
+;    BLUE   = Photographer  takes any empty slot, camps for 5-15 ticks
+;    GREEN  = Viewer        wants <=1 occupied neighbour, leaves when crowded
+;    ORANGE = Socializer    seeks the empty slot with the MOST neighbours
+;
+;  WORLD LAYOUT
+;    Top row  (pycor =  0)   The 30 railing slots (indices 0..29)
+;    Bottom strip (pycor < 0) Waiting area for overflow when no slot fits
+;    Dark-red patch          Permanently-avoided "dead zone" (sustained crowd)
+;
+;  HOW EACH TICK WORKS
+;    1. Spawn   ~Poisson(2) new agents arrive, type rolled 1/3 each
+;    2. Enter   each agent tries to claim a slot per its type's rule;
+;                if no qualifying slot exists, it joins the waiting area
+;    3. Railing photographers/socializers count down timers; viewers may bail
+;                if they have >1 neighbour (50% chance per tick)
+;    4. Waiting abandonment chance grows 5% + 2% per tick spent waiting;
+;                survivors retry placement each tick
+;    5. Dead    slots crowded for 10 consecutive ticks become permanent
+;       zones   no-go areas that viewers refuse to occupy
+;
+;  UI ELEMENTS (must be added in the Interface tab)
+;    Setup button   Commands: setup    (resets world and seeds RNG to 42)
+;    Go button      Commands: go       (FOREVER button -- runs until tick 120)
+;
+;    Optional monitors -- reporters defined at the bottom of this file:
+;      occupied-count            Slots currently occupied (0..30)
+;      num-waiting               Agents in the waiting area
+;      num-dead-zones            Permanently avoided slots
+;      num-photographers-on-rail Per-type breakdown on the railing
+;      num-viewers-on-rail
+;      num-socializers-on-rail
+;      count turtles             Total live agents (rail + waiting)
+;
+;  TUNABLES
+;    All knobs (arrival rate, thresholds, agent dwell times, etc.) are set
+;    inside the `setup` procedure -- edit the values there to experiment.
+;
+; =============================================================================
+
+breed [photographers photographer]
+breed [viewers       viewer]
+breed [socializers   socializer]
+
+turtles-own [
+  state
+  slot-idx
+  ticks-waiting
+  timer-left
+]
+
+globals [
+  NUM-SLOTS
+  SIM-DURATION
+  ARRIVAL-LAMBDA
+  VIEWER-PATIENCE-THRESHOLD
+  QUEUE-ABANDON-BASE
+  QUEUE-ABANDON-GROWTH
+  DEAD-ZONE-DENSITY-TICKS
+  DEAD-ZONE-NEIGHBOR-MIN
+  PHOTOG-MIN PHOTOG-MAX PHOTOG-MEAN PHOTOG-STD
+  SOC-MEAN SOC-STD
+  slot-agents
+  waiting-list
+  dead-zones
+  crowd-streak
+]
+
+to setup
+  clear-all
+  resize-world -1 30 -5 2
+  set-patch-size 10
+  set-default-shape turtles "circle"
+  random-seed 42
+
+  set NUM-SLOTS                 30
+  set SIM-DURATION              120
+  set ARRIVAL-LAMBDA            2
+  set VIEWER-PATIENCE-THRESHOLD 0.5
+  set QUEUE-ABANDON-BASE        0.05
+  set QUEUE-ABANDON-GROWTH      0.02
+  set DEAD-ZONE-DENSITY-TICKS   10
+  set DEAD-ZONE-NEIGHBOR-MIN    2
+  set PHOTOG-MIN                5
+  set PHOTOG-MAX                15
+  set PHOTOG-MEAN               10
+  set PHOTOG-STD                2.5
+  set SOC-MEAN                  8
+  set SOC-STD                   2
+
+  set slot-agents  n-values NUM-SLOTS [ -> nobody ]
+  set waiting-list []
+  set dead-zones   []
+  set crowd-streak n-values NUM-SLOTS [ -> 0 ]
+
+  draw-world
+  reset-ticks
+end
+
+to go
+  if ticks >= SIM-DURATION [ stop ]
+  every 0.1 [
+    spawn-agents
+    process-entering
+    tick-railing
+    process-waiting
+    update-dead-zones
+    refresh-display
+    tick
+    display
+  ]
+end
+
+to spawn-agents
+  let n poisson ARRIVAL-LAMBDA
+  repeat n [
+    let roll random-float 1
+    ifelse roll < (1 / 3) [
+      create-photographers 1 [ initialize-photographer ]
+    ] [
+      ifelse roll < (2 / 3) [
+        create-viewers 1 [ initialize-viewer ]
+      ] [
+        create-socializers 1 [ initialize-socializer ]
+      ]
+    ]
+  ]
+end
+
+to initialize-photographer
+  set state "entering"
+  set slot-idx -1
+  set ticks-waiting 0
+  let raw random-normal PHOTOG-MEAN PHOTOG-STD
+  set timer-left max list PHOTOG-MIN (min list PHOTOG-MAX round raw)
+  set color blue
+  set shape "circle"
+  set size 0.9
+  hide-turtle
+end
+
+to initialize-viewer
+  set state "entering"
+  set slot-idx -1
+  set ticks-waiting 0
+  set timer-left -1
+  set color green
+  set shape "circle"
+  set size 0.9
+  hide-turtle
+end
+
+to initialize-socializer
+  set state "entering"
+  set slot-idx -1
+  set ticks-waiting 0
+  let raw random-normal SOC-MEAN SOC-STD
+  set timer-left max list 1 round raw
+  set color orange
+  set shape "circle"
+  set size 0.9
+  hide-turtle
+end
+
+to process-entering
+  ask turtles with [ state = "entering" ] [
+    let placed try-place self
+    if not placed [ add-to-waiting self ]
+  ]
+end
+
+to-report try-place [ a ]
+  let slot -1
+  if [breed] of a = photographers [ set slot any-empty-slot ]
+  if [breed] of a = viewers       [ set slot best-slot-for-viewer ]
+  if [breed] of a = socializers   [ set slot best-slot-for-socializer ]
+  if slot = -1 [ report false ]
+  place-agent a slot
+  report true
+end
+
+to place-agent [ a idx ]
+  set slot-agents replace-item idx slot-agents a
+  ask a [
+    set state "viewing"
+    set slot-idx idx
+    setxy idx 0
+    show-turtle
+  ]
+end
+
+to add-to-waiting [ a ]
+  ask a [
+    set state "waiting"
+    set ticks-waiting 0
+    setxy (random-float NUM-SLOTS) (-3 - random-float 2)
+    show-turtle
+  ]
+  set waiting-list lput a waiting-list
+end
+
+to remove-agent [ a ]
+  let idx [slot-idx] of a
+  if idx >= 0 [
+    set slot-agents replace-item idx slot-agents nobody
+  ]
+  ask a [ die ]
+end
+
+to tick-railing
+  let to-remove []
+  foreach (range NUM-SLOTS) [ i ->
+    let a item i slot-agents
+    if a != nobody [
+      let b [breed] of a
+      if b = photographers [
+        ask a [ set timer-left timer-left - 1 ]
+        if [timer-left] of a <= 0 [ set to-remove lput a to-remove ]
+      ]
+      if b = viewers [
+        if neighbor-count i > 1 and random-float 1 < VIEWER-PATIENCE-THRESHOLD [
+          set to-remove lput a to-remove
+        ]
+      ]
+      if b = socializers [
+        ask a [ set timer-left timer-left - 1 ]
+        if [timer-left] of a <= 0 [ set to-remove lput a to-remove ]
+      ]
+    ]
+  ]
+  foreach to-remove [ a -> remove-agent a ]
+end
+
+to process-waiting
+  let still-waiting []
+  let to-depart    []
+  foreach waiting-list [ a ->
+    if a != nobody [
+      ask a [ set ticks-waiting ticks-waiting + 1 ]
+      let p QUEUE-ABANDON-BASE + QUEUE-ABANDON-GROWTH * ([ticks-waiting] of a)
+      ifelse random-float 1 < p [
+        set to-depart lput a to-depart
+      ] [
+        ifelse try-place a [
+        ] [
+          set still-waiting lput a still-waiting
+        ]
+      ]
+    ]
+  ]
+  foreach to-depart [ a -> ask a [ die ] ]
+  set waiting-list still-waiting
+end
+
+to update-dead-zones
+  foreach (range NUM-SLOTS) [ i ->
+    ifelse item i slot-agents != nobody and neighbor-count i >= DEAD-ZONE-NEIGHBOR-MIN [
+      set crowd-streak replace-item i crowd-streak ((item i crowd-streak) + 1)
+    ] [
+      set crowd-streak replace-item i crowd-streak 0
+    ]
+    if (item i crowd-streak) >= DEAD-ZONE-DENSITY-TICKS and not member? i dead-zones [
+      set dead-zones lput i dead-zones
+    ]
+  ]
+end
+
+to-report empty-slots
+  report filter [ i -> item i slot-agents = nobody ] (range NUM-SLOTS)
+end
+
+to-report occupied-count
+  report length filter [ i -> item i slot-agents != nobody ] (range NUM-SLOTS)
+end
+
+to-report neighbor-count [ idx ]
+  let cnt 0
+  if idx > 0 and item (idx - 1) slot-agents != nobody [ set cnt cnt + 1 ]
+  if idx < (NUM-SLOTS - 1) and item (idx + 1) slot-agents != nobody [ set cnt cnt + 1 ]
+  report cnt
+end
+
+to-report any-empty-slot
+  let es empty-slots
+  ifelse empty? es [ report -1 ] [ report one-of es ]
+end
+
+to-report best-slot-for-viewer
+  let candidates filter [ i ->
+    not member? i dead-zones and neighbor-count i <= 1
+  ] empty-slots
+  ifelse empty? candidates [ report -1 ] [ report one-of candidates ]
+end
+
+to-report best-slot-for-socializer
+  let es empty-slots
+  if empty? es [ report -1 ]
+  let max-n max map [ i -> neighbor-count i ] es
+  let candidates filter [ i -> neighbor-count i = max-n ] es
+  report one-of candidates
+end
+
+to-report poisson [ lambda ]
+  let L exp (- lambda)
+  let k 0
+  let p 1
+  while [ p > L ] [
+    set k k + 1
+    set p p * random-float 1
+  ]
+  report k - 1
+end
+
+to draw-world
+  ask patches [ set pcolor black ]
+  ask patches with [ pycor = 0 and pxcor >= 0 and pxcor < NUM-SLOTS ] [
+    set pcolor gray - 3
+  ]
+  ask patches with [ pycor < 0 and pxcor >= 0 and pxcor < NUM-SLOTS ] [
+    set pcolor gray - 4.5
+  ]
+end
+
+to refresh-display
+  ask patches with [ pycor = 0 and pxcor >= 0 and pxcor < NUM-SLOTS ] [
+    let i pxcor
+    ifelse member? i dead-zones [
+      set pcolor red - 3
+    ] [
+      set pcolor gray - 3
+    ]
+  ]
+end
+
+to-report num-photographers-on-rail
+  report length filter [ a -> a != nobody and [breed] of a = photographers ] slot-agents
+end
+
+to-report num-viewers-on-rail
+  report length filter [ a -> a != nobody and [breed] of a = viewers ] slot-agents
+end
+
+to-report num-socializers-on-rail
+  report length filter [ a -> a != nobody and [breed] of a = socializers ] slot-agents
+end
+
+to-report num-waiting
+  report length waiting-list
+end
+
+to-report num-dead-zones
+  report length dead-zones
+end

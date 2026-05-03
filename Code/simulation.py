@@ -21,7 +21,7 @@ _TYPE_CODE = {
 class Simulation:
     def __init__(self, seed: int = SEED):
         self.rng = np.random.default_rng(seed)
-        self.env = Overlook()
+        self.env = Overlook(self.rng)
         self.tick = 0
         self.all_agents: list[Agent] = []
         self.active_agents: list[Agent] = []
@@ -66,9 +66,7 @@ class Simulation:
 
     def _process_entering(self):
         for agent in [a for a in self.active_agents if a.state == "entering"]:
-            if self.env.is_path_congested():
-                self.env.add_to_waiting(agent)
-            elif not self._try_place(agent):
+            if not self._try_place(agent):
                 self.env.add_to_waiting(agent)
 
     def _tick_railing(self):
@@ -109,7 +107,7 @@ class Simulation:
                 self.departed.append(agent)
                 continue
 
-            if not self.env.is_path_congested() and self._try_place(agent):
+            if self._try_place(agent):
                 continue  # placed successfully
             still_waiting.append(agent)
 
